@@ -74,6 +74,20 @@ public class KahootClient {
 		}
 	}
 	
+	/*
+	 * Challenge explanation:
+	 * 
+	 * First we do some JavaScript shenanigans, replace some functions
+	 * that we know to be true by "true". This part of the code was
+	 * taken from this repository: https://github.com/wwwg/kahoot.js
+	 * 
+	 * Then we evaluate the challenge (replaced) with the nashorn js engine.
+	 * We take the bytes from the challenge and store them.
+	 * Then, we get the bytes from the previously obtained session token,
+	 * decode them with base64 so get get base64 decoded bytes.
+	 * We then use XOR encryption, using the challenge bytes as a mask.
+	 * We take the obtained bytes and make a string out of it. That's our ID.
+	 */
 	private void solveChallenge() throws ChallengeFailedException {
 		ScriptEngine engine = new ScriptEngineManager().getEngineByName("nashorn");
 		

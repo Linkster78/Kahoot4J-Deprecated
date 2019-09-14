@@ -3,17 +3,15 @@ package com.tek.kahoot4j;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
 
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
 import javax.script.ScriptException;
 import javax.websocket.ContainerProvider;
-import javax.websocket.DeploymentException;
-import javax.websocket.WebSocketContainer;
 
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
@@ -21,15 +19,29 @@ import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.impl.client.HttpClients;
+import org.cometd.client.BayeuxClient;
+import org.cometd.client.transport.ClientTransport;
+import org.cometd.client.transport.LongPollingTransport;
+import org.cometd.websocket.client.WebSocketTransport;
+import org.glassfish.tyrus.client.ClientManager;
 import org.json.JSONObject;
 
+/**
+ * KahootClient, handles connections and contains
+ * the websocket/data related to it.
+ * 
+ * @author RedstoneTek
+ */
 public class KahootClient {
 	
 	private static final String HANDSHAKE_ENDPOINT = "https://kahoot.it/reserve/session/%d/?%d";
 	private static final String REGISTER_ENDPOINT = "wss://kahoot.it/cometd/%d/%s";
+	private static final String WS_CONTROLLER = "/service/controller";
+	private static final String WS_PLAYER = "/service/player";
+	private static final String USER_AGENT = "Kahoot4J/1.0";
 	
 	private HttpClient client;
-	private WebSocketHandler webSocketHandler;
+	private BayeuxClient wsClient;
 	private String sessionToken;
 	private String sessionId;
 	private String challenge;
@@ -38,19 +50,23 @@ public class KahootClient {
 	private String name;
 	
 	public KahootClient(int pin, String name) {
-		client = HttpClients.createMinimal();
-		
+		this(HttpClients.createMinimal(), pin, name);
+	}
+	
+	public KahootClient(HttpClient client, int pin, String name) {
+		this.client = client;
 		this.pin = pin;
 		this.name = name;
 	}
 	
 	public void connect() throws IOException, InvalidKahootException, ChallengeFailedException {
-		handshake();
+		httpHandshake();
 		solveChallenge();
 		setupWebSocket();
+		login();
 	}
 	
-	private void handshake() throws IOException, InvalidKahootException {
+	private void httpHandshake() throws IOException, InvalidKahootException {
 		HttpGet handshakeRequest = new HttpGet(String.format(HANDSHAKE_ENDPOINT, pin, System.currentTimeMillis()));
 		HttpResponse handshakeResponse = client.execute(handshakeRequest);
 		
@@ -117,14 +133,50 @@ public class KahootClient {
 	}
 	
 	private void setupWebSocket() throws IOException {
-		WebSocketContainer container = ContainerProvider.getWebSocketContainer();
-		
-		try{
-			container.connectToServer(WebSocketHandler.class, new URI(String.format(REGISTER_ENDPOINT, pin, sessionId)));
-			webSocketHandler = WebSocketHandler.latestInstance;
-		} catch(DeploymentException | URISyntaxException e) {
-			e.printStackTrace();
+		ClientManager webSocketContainer = (ClientManager) ContainerProvider.getWebSocketContainer();
+		ClientTransport wsTransport = new WebSocketTransport(null, null, webSocketContainer);
+
+		org.eclipse.jetty.client.HttpClient httpClient = new org.eclipse.jetty.client.HttpClient();
+		httpClient.addBean(webSocketContainer, true);
+		try {
+			httpClient.start();
+		} catch (Exception e) {
+			throw new IOException(e);
 		}
+
+		ClientTransport httpTransport = new LongPollingTransport(null, httpClient);
+
+		wsClient = new BayeuxClient(String.format(REGISTER_ENDPOINT, pin, sessionId), wsTransport, httpTransport);
+		wsClient.handshake();
+		
+		boolean handshaken = wsClient.waitFor(1000, BayeuxClient.State.CONNECTED);
+        if (handshaken) {
+        	wsClient.getChannel(WS_CONTROLLER).subscribe(new KahootMessageListener());
+        	wsClient.getChannel(WS_PLAYER).subscribe(new KahootMessageListener());
+        }
+	}
+	
+	private void login() {
+		JSONObject jsonScreen = new JSONObject();
+		jsonScreen.put("width", 1080);
+		jsonScreen.put("height", 720);
+		
+		JSONObject jsonDevice = new JSONObject();
+		jsonDevice.put("userAgent", USER_AGENT);
+		jsonDevice.put("screen", jsonScreen);
+		
+		JSONObject jsonContent = new JSONObject();
+		jsonContent.put("participantUserId", (String)null);
+		jsonContent.put("device", jsonDevice);
+		
+		Map<String, Object> data = new HashMap<String, Object>(5);
+		data.put("type", "login");
+		data.put("gameid", pin);
+		data.put("host", "kahoot.it");
+		data.put("name", name);
+		data.put("content", jsonContent);
+		
+		wsClient.getChannel(WS_CONTROLLER).publish(data);
 	}
 	
 	public String getSessionToken() {

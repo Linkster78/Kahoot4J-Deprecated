@@ -7,7 +7,6 @@ import java.nio.ByteBuffer;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
 
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
@@ -35,12 +34,14 @@ import org.json.JSONObject;
  */
 public class KahootClient {
 	
+	//Final variables. Endpoints, websocket channels and user agent.
 	private static final String HANDSHAKE_ENDPOINT = "https://kahoot.it/reserve/session/%d/?%d";
 	private static final String REGISTER_ENDPOINT = "wss://kahoot.it/cometd/%d/%s";
-	private static final String WS_CONTROLLER = "/service/controller";
-	private static final String WS_PLAYER = "/service/player";
 	private static final String USER_AGENT = "Kahoot4J/1.0";
+	public static final String WS_CONTROLLER = "/service/controller";
+	public static final String WS_PLAYER = "/service/player";
 	
+	//All connection related variables.
 	private HttpClient httpClient;
 	private BayeuxClient wsClient;
 	private ClientManager webSocketContainer;
@@ -50,19 +51,45 @@ public class KahootClient {
 	private String sessionId;
 	private String challenge;
 	
+	//Kahoot event handler
+	private KahootEventHandler eventHandler;
+	
+	//Constructor passed values.
 	private int pin;
 	private String name;
 	
+	/**
+	 * Creates a KahootClient with the
+	 * specified pin and name.
+	 * 
+	 * @param pin The game pin
+	 * @param name The username
+	 */
 	public KahootClient(int pin, String name) {
 		this(HttpClients.createMinimal(), pin, name);
 	}
 	
+	/**
+	 * Creates a KahootClient with the specified
+	 * pin, name and http client.
+	 * 
+	 * @param client The HTTP Client
+	 * @param pin The game pin
+	 * @param name The username
+	 */
 	public KahootClient(HttpClient client, int pin, String name) {
 		this.httpClient = client;
 		this.pin = pin;
 		this.name = name;
 	}
 	
+	/**
+	 * Connects the client to the Kahoot game.
+	 * 
+	 * @throws IOException Thrown if there is an issue IO wise. (Internet Connection)
+	 * @throws InvalidKahootException Thrown if the provided Kahoot game pin is invalid.
+	 * @throws ChallengeFailedException Thrown if the challenge cannot be solved.
+	 */
 	public void connect() throws IOException, InvalidKahootException, ChallengeFailedException {
 		httpHandshake();
 		solveChallenge();
@@ -70,6 +97,13 @@ public class KahootClient {
 		login();
 	}
 	
+	/**
+	 * Does the HTTP Handshake with the
+	 * Kahoot servers. (Gets x-kahoot-session-token)
+	 * 
+	 * @throws IOException Thrown if there is an issue IO wise. (Internet Connection)
+	 * @throws InvalidKahootException Thrown if the provided Kahoot game pin is invalid.
+	 */
 	private void httpHandshake() throws IOException, InvalidKahootException {
 		HttpGet handshakeRequest = new HttpGet(String.format(HANDSHAKE_ENDPOINT, pin, System.currentTimeMillis()));
 		HttpResponse handshakeResponse = httpClient.execute(handshakeRequest);
@@ -94,19 +128,10 @@ public class KahootClient {
 		}
 	}
 	
-	/*
-	 * Challenge explanation:
+	/**
+	 * Solves the challenge gotten from the httpHandshake method.
 	 * 
-	 * First we do some JavaScript shenanigans, replace some functions
-	 * that we know to be true by "true". This part of the code was
-	 * taken from this repository: https://github.com/wwwg/kahoot.js
-	 * 
-	 * Then we evaluate the challenge (replaced) with the nashorn js engine.
-	 * We take the bytes from the challenge and store them.
-	 * Then, we get the bytes from the previously obtained session token,
-	 * decode them with base64 so get get base64 decoded bytes.
-	 * We then use XOR encryption, using the challenge bytes as a mask.
-	 * We take the obtained bytes and make a string out of it. That's our ID.
+	 * @throws ChallengeFailedException Thrown if the challenge cannot be solved.
 	 */
 	private void solveChallenge() throws ChallengeFailedException {
 		ScriptEngine engine = new ScriptEngineManager().getEngineByName("nashorn");
@@ -136,6 +161,12 @@ public class KahootClient {
 		}
 	}
 	
+	/**
+	 * Sets up the cometd websocket connection
+	 * to the Kahoot servers.
+	 * 
+	 * @throws IOException Thrown if there is an issue IO wise. (Internet Connection)
+	 */
 	private void setupWebSocket() throws IOException {
 		webSocketContainer = (ClientManager) ContainerProvider.getWebSocketContainer();
 		wsTransport = new WebSocketTransport(null, null, webSocketContainer);
@@ -153,13 +184,19 @@ public class KahootClient {
 		wsClient = new BayeuxClient(String.format(REGISTER_ENDPOINT, pin, sessionId), wsTransport, lpTransport);
 		wsClient.handshake();
 		
+		KahootMessageListener messageListener = new KahootMessageListener(this);
+		
 		boolean handshaken = wsClient.waitFor(1000, BayeuxClient.State.CONNECTED);
         if (handshaken) {
-        	wsClient.getChannel(WS_CONTROLLER).subscribe(new KahootMessageListener());
-        	wsClient.getChannel(WS_PLAYER).subscribe(new KahootMessageListener());
+        	wsClient.getChannel(WS_CONTROLLER).subscribe(messageListener);
+        	wsClient.getChannel(WS_PLAYER).subscribe(messageListener);
         }
 	}
 	
+	/**
+	 * Sends the LOGIN websocket message through
+	 * the /service/controller cometd channel.
+	 */
 	private void login() {
 		JSONObject jsonScreen = new JSONObject();
 		jsonScreen.put("width", 1080);
@@ -183,6 +220,9 @@ public class KahootClient {
 		wsClient.getChannel(WS_CONTROLLER).publish(data);
 	}
 	
+	/**
+	 * Closes the Kahoot cometd client, http client and such.
+	 */
 	public void close() {
 		wsClient.disconnect();
 		wsClient.waitFor(1000, BayeuxClient.State.DISCONNECTED);
@@ -201,16 +241,58 @@ public class KahootClient {
 		wsTransport = null;
 	}
 	
+	/**
+	 * Gets the Kahoot session token.
+	 * 
+	 * @return The Kahoot session token
+	 */
 	public String getSessionToken() {
 		return sessionToken;
 	}
 	
+	/**
+	 * Gets the Kahoot session ID.
+	 * 
+	 * @return The Kahoot session ID
+	 */
+	public String getSessionId() {
+		return sessionId;
+	}
+	
+	/**
+	 * Gets the Kahoot username.
+	 * 
+	 * @return The username
+	 */
 	public String getName() {
 		return name;
 	}
 	
+	/**
+	 * Gets the Kahoot game pin.
+	 * 
+	 * @return The game pin
+	 */
 	public int getPin() {
 		return pin;
+	}
+	
+	/**
+	 * Sets the Kahoot event handler.
+	 * 
+	 * @param eventHandler The event handler
+	 */
+	public void setEventHandler(KahootEventHandler eventHandler) {
+		this.eventHandler = eventHandler;
+	}
+	
+	/**
+	 * Gets the Kahoot Event Handler.
+	 * 
+	 * @return The event handler
+	 */
+	public KahootEventHandler getEventHandler() {
+		return eventHandler;
 	}
 	
 }

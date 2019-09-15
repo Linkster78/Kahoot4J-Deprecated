@@ -221,6 +221,28 @@ public class KahootClient {
 	}
 	
 	/**
+	 * Answers the current question.
+	 * The answer ID goes from 0-3, top left, top right, bottom left, bottom right.
+	 * 
+	 * @param choice The answer ID
+	 */
+	public void answer(int choice, int questionIndex) {
+		JSONObject jsonContent = new JSONObject();
+		jsonContent.put("choice", choice);
+		jsonContent.put("questionIndex", questionIndex);
+		jsonContent.put("meta", new JSONObject("{\"lag\":10}"));
+		
+		Map<String, Object> data = new HashMap<String, Object>(5);
+		data.put("id", 45);
+		data.put("type", "message");
+		data.put("gameid", pin);
+		data.put("host", "kahoot.it");
+		data.put("content", jsonContent);
+		
+		wsClient.getChannel(WS_CONTROLLER).publish(data);
+	}
+	
+	/**
 	 * Closes the Kahoot cometd client, http client and such.
 	 */
 	public void close() {

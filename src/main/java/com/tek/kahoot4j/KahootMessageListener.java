@@ -9,6 +9,9 @@ public class KahootMessageListener implements MessageListener {
 	@Override
 	public void onMessage(ClientSessionChannel channel, Message message) {
 		System.out.println("Message from " + channel.getId());
+		for(String key : message.getDataAsMap().keySet()) {
+			System.out.println(" " + key + ": " + message.getDataAsMap().get(key));
+		}
 	}
 
 }

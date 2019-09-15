@@ -7,6 +7,7 @@ import java.nio.ByteBuffer;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
@@ -40,8 +41,11 @@ public class KahootClient {
 	private static final String WS_PLAYER = "/service/player";
 	private static final String USER_AGENT = "Kahoot4J/1.0";
 	
-	private HttpClient client;
+	private HttpClient httpClient;
 	private BayeuxClient wsClient;
+	private ClientManager webSocketContainer;
+	private org.eclipse.jetty.client.HttpClient lpClient;
+	private ClientTransport wsTransport, lpTransport;
 	private String sessionToken;
 	private String sessionId;
 	private String challenge;
@@ -54,7 +58,7 @@ public class KahootClient {
 	}
 	
 	public KahootClient(HttpClient client, int pin, String name) {
-		this.client = client;
+		this.httpClient = client;
 		this.pin = pin;
 		this.name = name;
 	}
@@ -68,7 +72,7 @@ public class KahootClient {
 	
 	private void httpHandshake() throws IOException, InvalidKahootException {
 		HttpGet handshakeRequest = new HttpGet(String.format(HANDSHAKE_ENDPOINT, pin, System.currentTimeMillis()));
-		HttpResponse handshakeResponse = client.execute(handshakeRequest);
+		HttpResponse handshakeResponse = httpClient.execute(handshakeRequest);
 		
 		if(handshakeResponse.getStatusLine().getStatusCode() == 404) {
 			throw new InvalidKahootException(pin);
@@ -133,20 +137,20 @@ public class KahootClient {
 	}
 	
 	private void setupWebSocket() throws IOException {
-		ClientManager webSocketContainer = (ClientManager) ContainerProvider.getWebSocketContainer();
-		ClientTransport wsTransport = new WebSocketTransport(null, null, webSocketContainer);
+		webSocketContainer = (ClientManager) ContainerProvider.getWebSocketContainer();
+		wsTransport = new WebSocketTransport(null, null, webSocketContainer);
 
-		org.eclipse.jetty.client.HttpClient httpClient = new org.eclipse.jetty.client.HttpClient();
-		httpClient.addBean(webSocketContainer, true);
+		lpClient = new org.eclipse.jetty.client.HttpClient();
+		lpClient.addBean(webSocketContainer, true);
 		try {
-			httpClient.start();
+			lpClient.start();
 		} catch (Exception e) {
 			throw new IOException(e);
 		}
+		
+		lpTransport = new LongPollingTransport(null, lpClient);
 
-		ClientTransport httpTransport = new LongPollingTransport(null, httpClient);
-
-		wsClient = new BayeuxClient(String.format(REGISTER_ENDPOINT, pin, sessionId), wsTransport, httpTransport);
+		wsClient = new BayeuxClient(String.format(REGISTER_ENDPOINT, pin, sessionId), wsTransport, lpTransport);
 		wsClient.handshake();
 		
 		boolean handshaken = wsClient.waitFor(1000, BayeuxClient.State.CONNECTED);
@@ -177,6 +181,24 @@ public class KahootClient {
 		data.put("content", jsonContent);
 		
 		wsClient.getChannel(WS_CONTROLLER).publish(data);
+	}
+	
+	public void close() {
+		wsClient.disconnect();
+		wsClient.waitFor(1000, BayeuxClient.State.DISCONNECTED);
+		wsClient.abort();
+		try {
+			lpClient.stop();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		lpTransport.abort();
+		wsTransport.abort();
+		
+		wsClient = null;
+		lpClient = null;
+		lpTransport = null;
+		wsTransport = null;
 	}
 	
 	public String getSessionToken() {

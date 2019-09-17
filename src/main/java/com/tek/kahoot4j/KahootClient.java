@@ -64,23 +64,55 @@ public class KahootClient {
 	 * 
 	 * @param pin The game pin
 	 * @param name The username
+	 * @throws IOException 
 	 */
-	public KahootClient(int pin, String name) {
-		this(HttpClients.createMinimal(), pin, name);
+	public KahootClient(int pin, String name) throws IOException {
+		this.pin = pin;
+		this.name = name;
+		setupTransport();
 	}
 	
 	/**
-	 * Creates a KahootClient with the specified
-	 * pin, name and http client.
+	 * Creates a KahootClient with
+	 * the provided transport info.
 	 * 
-	 * @param client The HTTP Client
-	 * @param pin The game pin
-	 * @param name The username
+	 * @param pin
+	 * @param name
+	 * @param httpClient
+	 * @param lpClient
+	 * @param lpTransport
+	 * @param wsTransport
 	 */
-	public KahootClient(HttpClient client, int pin, String name) {
-		this.httpClient = client;
+	public KahootClient(int pin, String name, HttpClient httpClient, 
+			org.eclipse.jetty.client.HttpClient lpClient, ClientTransport lpTransport, ClientTransport wsTransport) {
 		this.pin = pin;
 		this.name = name;
+		this.httpClient = httpClient;
+		this.lpClient = lpClient;
+		this.lpTransport = lpTransport;
+		this.wsTransport = wsTransport;
+	}
+	
+	/**
+	 * Sets up the client transport and http client.
+	 * 
+	 * @throws IOException
+	 */
+	private void setupTransport() throws IOException {
+		httpClient = HttpClients.createMinimal();
+		
+		webSocketContainer = (ClientManager) ContainerProvider.getWebSocketContainer();
+		wsTransport = new WebSocketTransport(null, null, webSocketContainer);
+
+		lpClient = new org.eclipse.jetty.client.HttpClient();
+		lpClient.addBean(webSocketContainer, true);
+		try {
+			lpClient.start();
+		} catch (Exception e) {
+			throw new IOException(e);
+		}
+		
+		lpTransport = new LongPollingTransport(null, lpClient);
 	}
 	
 	/**
@@ -168,19 +200,6 @@ public class KahootClient {
 	 * @throws IOException Thrown if there is an issue IO wise. (Internet Connection)
 	 */
 	private void setupWebSocket() throws IOException {
-		webSocketContainer = (ClientManager) ContainerProvider.getWebSocketContainer();
-		wsTransport = new WebSocketTransport(null, null, webSocketContainer);
-
-		lpClient = new org.eclipse.jetty.client.HttpClient();
-		lpClient.addBean(webSocketContainer, true);
-		try {
-			lpClient.start();
-		} catch (Exception e) {
-			throw new IOException(e);
-		}
-		
-		lpTransport = new LongPollingTransport(null, lpClient);
-
 		wsClient = new BayeuxClient(String.format(REGISTER_ENDPOINT, pin, sessionId), wsTransport, lpTransport);
 		wsClient.handshake();
 		
@@ -315,6 +334,42 @@ public class KahootClient {
 	 */
 	public KahootEventHandler getEventHandler() {
 		return eventHandler;
+	}
+	
+	/**
+	 * Gets the HTTP Client.
+	 * 
+	 * @return The HTTP client
+	 */
+	public HttpClient getHttpClient() {
+		return httpClient;
+	}
+	
+	/**
+	 * Gets the long polling HTTP Client.
+	 * 
+	 * @return The LP Http Client
+	 */
+	public org.eclipse.jetty.client.HttpClient getLongPollingClient() {
+		return lpClient;
+	}
+	
+	/**
+	 * Gets the WebSocket transport.
+	 * 
+	 * @return The WS transport
+	 */
+	public ClientTransport getWebSocketTransport() {
+		return wsTransport;
+	}
+	
+	/**
+	 * Gets the LongPolling transport.
+	 * 
+	 * @return The LP transport
+	 */
+	public ClientTransport getLongPollingTransport() {
+		return lpTransport;
 	}
 	
 }
